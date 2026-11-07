@@ -18,7 +18,7 @@ RUN wget -qO - https://github.com/tontinton/maki/archive/refs/tags/${VERSION}.ta
 COPY maki-home.patch ./maki-home.patch
 RUN patch -p1 -i maki-home.patch
 
-RUN cargo build --release --locked --profile release-lto && \
+RUN cargo build --profile release-lto --locked && \
     mkdir -p /out && \
     cp /cargo-cache/target/release/maki /out/maki
 
