@@ -138,9 +138,9 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ${{ runner.temp }}/.cache-oci
-          key: oci-cache-${{ matrix.arch }}-${{ hashFiles('./codex/base.dockerfile') }}-${{ needs.metadata.outputs.latest_tag }}
+          key: oci-cache-${{ matrix.arch }}-${{ hashFiles('./codex/dockerfile') }}-${{ needs.metadata.outputs.latest_tag }}
           restore-keys: |
-            oci-cache-${{ matrix.arch }}-${{ hashFiles('./codex/base.dockerfile') }}-
+            oci-cache-${{ matrix.arch }}-${{ hashFiles('./codex/dockerfile') }}-
 
       - name: Ensure cache dir exists
         run: |
@@ -170,7 +170,7 @@ jobs:
         with:
           image: localhost/codex-base
           tags: ${{ matrix.arch }}
-          containerfiles: ./codex/base.dockerfile
+          containerfiles: ./codex/dockerfile
           context: ./codex
           build-args: |
             VERSION=${{ needs.metadata.outputs.latest_tag }}
@@ -241,8 +241,8 @@ jobs:
         with:
           image: ${{ needs.metadata.outputs.image_name }}
           tags: ci-${{ matrix.distro.name }}-${{ matrix.arch }}
-          containerfiles: ./codex/dockerfile
-          context: ./codex
+          containerfiles: ./distro/dockerfile
+          context: ./distro
           build-args: |
             FINAL_IMAGE=${{ matrix.distro.image }}
             BASE_IMAGE=localhost/codex-base:${{ matrix.arch }}

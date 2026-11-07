@@ -1,74 +1,41 @@
-ARG FINAL_IMAGE
-ARG SSH_VERSION=10.4p1
+FROM docker.io/rust:1.96.0-alpine3.23 AS builder
 
-FROM docker.io/alpine:3.24 AS builder_ssh
+ARG VERSION
 
-ARG SSH_VERSION
+ENV CARGO_HOME=/cargo-cache/cargo
+ENV CARGO_TARGET_DIR=/cargo-cache/target
 
 RUN apk add --no-cache \
-    gcc \
-    make \
-    musl-dev \
+    build-base \
+    pkgconf \
+    git \
+    perl \
     openssl-dev \
-    openssl-libs-static \
-    zlib-dev \
-    zlib-static
+    libcap-dev \
+    libcap-static \
+    python3 \
+    sccache
 
 WORKDIR /build
 
-RUN wget -qO - https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-${SSH_VERSION}.tar.gz | tar xz -f - --strip-components=1
+RUN wget -qO - https://github.com/openai/codex/archive/refs/tags/${VERSION}.tar.gz | \
+    tar xz -f - --strip-components=1
 
-ENV CC=gcc
-ENV LD="${CC}"
-ENV CFLAGS="-Os -pipe -ffunction-sections -fdata-sections"
-ENV LDFLAGS="-static -Wl,--gc-sections"
+COPY codex-bind.patch ./codex-bind.patch
+RUN git apply codex-bind.patch
 
-RUN ./configure \
-        --prefix=/usr \
-        --bindir=/usr/local/bin \
-        --sysconfdir=/etc/ssh \
-        --libexecdir=/usr/lib/ssh \
-        --with-ssl-dir=/usr \
-        --with-zlib=/usr \
-        --without-pam \
-        --without-kerberos5 \
-        --without-libedit \
-        --disable-utmp \
-        --disable-wtmp \
-        --disable-lastlog \
-        --disable-strip \
-        --with-cflags="${CFLAGS}" \
-        --with-ldflags="${LDFLAGS}"
+COPY setup-alpine-rusty-v8.sh ./setup-alpine-rusty-v8.sh
+RUN ./setup-alpine-rusty-v8.sh
 
-RUN make -j"$(nproc)" ssh scp && \
-    strip --strip-unneeded ./ssh ./scp && \
-    install -Dm755 ./ssh /out/ssh && \
-    install -Dm755 ./scp /out/scp
+RUN cargo build --manifest-path=codex-rs/Cargo.toml \
+        --release \
+        -p codex-cli \
+        -p codex-code-mode-host && \
+    mkdir -p /out && \
+    cp /cargo-cache/target/release/codex /out/codex && \
+    cp /cargo-cache/target/release/codex-code-mode-host /out/codex-code-mode-host
 
 
-FROM ${FINAL_IMAGE} as main
+FROM scratch AS main
 
-ARG BASE_IMAGE
-ARG DISTRO
-
-COPY ../install-deps.sh ./install-deps.sh
-RUN ./install-deps.sh
-
-COPY --from=${BASE_IMAGE} /out/ /usr/local/bin/
-COPY --from=builder_ssh /out/ /usr/local/bin/
-
-ARG TARGETARCH
-RUN wget -O- https://github.com/podman-container-tools/podman/releases/download/v5.8.4/podman-remote-static-linux_${TARGETARCH}.tar.gz | \
-    tar -xOz "bin/podman-remote-static-linux_${TARGETARCH}" > /usr/local/bin/podman-remote && \
-    chmod +x /usr/local/bin/podman-remote
-
-COPY rootfs /
-COPY install-skill.sh ./install-skill.sh
-RUN ./install-skill.sh
-
-ENV CODEX_HOME=/data
-ENV PATH="/usr/local/bin:${PATH}"
-
-WORKDIR /work
-
-ENTRYPOINT [ "/usr/local/bin/codex", "--no-daemon" ]
+COPY --from=builder /out /out
