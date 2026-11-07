@@ -2,7 +2,7 @@
 
 set -eu
 
-PACKAGES="ca-certificates bubblewrap ripgrep git"
+PACKAGES="ca-certificates bubblewrap ripgrep git bash"
 
 if command -v apk; then
   apk add --no-cache ${PACKAGES}
