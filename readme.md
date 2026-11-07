@@ -1,50 +1,59 @@
-# codex-docker
-This project builds a **small container image for the Codex CLI** (from the official `openai/codex` repo) and ships it as a runnable appliance. It uses a multi-stage build to compile the Rust CLI and keeps the runtime slim (just the binary + CA certs).
+# agents-docker
+This project builds **small container images for Codex CLI and Maki** from the [openai/codex](https://github.com/openai/codex) and [tontinton/maki](https://github.com/tontinton/maki) repos. It uses multi-stage builds to compile the Rust CLIs and ships them with a minimal runtime.
 
 ## Use from registry
 
-- Pull the published image:
+- Pull the published images:
     ```bash
-    docker pull ghcr.io/ergolyam/codex-docker:latest
+    docker pull ghcr.io/ergolyam/agents-docker/codex:latest
+    docker pull ghcr.io/ergolyam/agents-docker/maki:latest
     ```
 
-- Run it (mount your workspace + state):
+- Run Codex (mount your workspace + state):
     ```bash
     docker run -it --rm \
       -v "${PWD}":/work \
       -v codex-data:/data \
       -p 127.0.0.1:1455:1455 \
-      ghcr.io/ergolyam/codex-docker:latest
+      ghcr.io/ergolyam/agents-docker/codex:latest
     ```
-    - The container starts `codex` by default, so you drop straight into the CLI.
-    - Use `:void`, `:debian`, `:fedora` if you prefer those base layers.
+
+- Run Maki:
+    ```bash
+    docker run -it --rm \
+      -v "${PWD}":/work \
+      -v maki-data:/data \
+      ghcr.io/ergolyam/agents-docker/maki:latest
+    ```
+
+- Arguments after the image name are passed to the CLI. Codex starts with `--no-daemon`.
+- Both images support `:alpine`, `:void`, `:debian`, `:fedora`, and `:nix`. `:latest` uses Alpine.
 
 ## Build & run locally
 
-- Build the Codex binary layer:
+- Build the Codex binary layer (set `CODEX_VERSION` to a compatible upstream `rust-v...` tag):
     ```bash
-    docker build -t codex-base \
-      --build-arg VERSION=rust-v0.80.0 \
-      -f base.dockerfile .
+    docker build -t localhost/codex-base \
+      --build-arg VERSION="${CODEX_VERSION}" \
+      -f codex/dockerfile ./codex
+    ```
+
+- Or build the Maki binary layer (set `MAKI_VERSION` to a compatible upstream `v...` tag):
+    ```bash
+    docker build -t localhost/maki-base \
+      --build-arg VERSION="${MAKI_VERSION}" \
+      -f maki/dockerfile ./maki
     ```
 
 - Build the runnable image:
     ```bash
-    docker build -t codex-cli \
-      --build-arg FINAL_IMAGE=alpine:3.24 \
-      --build-arg BASE_IMAGE=codex-base \
-      --build-arg DISTRO=alpine \
-      -f dockerfile .
+    docker build -t localhost/codex-cli \
+      --build-arg FINAL_IMAGE=docker.io/alpine:3.24 \
+      --build-arg BASE_IMAGE=localhost/codex-base \
+      -f distro/dockerfile ./distro
     ```
-
-- Build with a different base distro:
-    ```bash
-    docker build -t codex-cli \
-      --build-arg FINAL_IMAGE=debian:trixie-slim \
-      --build-arg BASE_IMAGE=codex-base \
-      --build-arg DISTRO=debian \
-      -f dockerfile .
-    ```
+    - For Maki, use `localhost/maki-base` and tag the result `localhost/maki-cli`.
+    - For a different distro, change `FINAL_IMAGE` (e.g. `docker.io/debian:trixie-slim`).
 
 - Run it (mount your workspace + state):
     ```bash
@@ -52,28 +61,30 @@ This project builds a **small container image for the Codex CLI** (from the offi
       -v "${PWD}":/work \
       -v codex-data:/data \
       -p 127.0.0.1:1455:1455 \
-      codex-cli
+      localhost/codex-cli
     ```
-    - The container starts `codex` by default, so you drop straight into the CLI.
 
 ## Build arguments
 
-| Argument      | Description                                                                    |
-|---------------|--------------------------------------------------------------------------------|
-| `FINAL_IMAGE` | Runtime image (minimal OS for the final layer).                                |
-| `BASE_IMAGE`  | Image that provides the compiled `/codex` binary.                              |
-| `DISTRO`      | Runtime distribution: `alpine`, `void`, `debian`, or `fedora`.                 |
-| `VERSION`     | Upstream `openai/codex` tag to build (example: `rust-v0.80.0`).                |
+| Argument      | Description                                                         |
+|---------------|---------------------------------------------------------------------|
+| `VERSION`     | Upstream Codex or Maki tag to build.                                |
+| `FINAL_IMAGE` | Runtime image for the final layer.                                  |
+| `BASE_IMAGE`  | Image providing the compiled binaries and entrypoint in `/out/`.     |
+| `DISTRO`      | Declared but unused; dependencies are selected by package manager.  |
+| `SSH_VERSION` | OpenSSH version to build (default: `10.4p1`).                      |
+| `TARGETARCH`  | Target architecture for `docker-remote` (`amd64` or `arm64`).       |
 
 ## Environment Variables
 
 | Variable     | Description                                                     |
 |--------------|-----------------------------------------------------------------|
-| `CODEX_HOME` | Set to `/data` inside the image (Codex state/config directory). |
+| `CODEX_HOME` | Set to `/data` by the Codex entrypoint (state/config directory). |
+| `MAKI_HOME`  | Set to `/data` by the Maki entrypoint (state/config directory).  |
 
 ## Features
 
-- **Slim runtime**: only the Codex binary and CA certificates in the final stage.
-- **Multi‑distro builds**: Alpine, Void, Debian, and Fedora supported via build args.
+- **Slim runtime**: includes CLI dependencies, `ssh`, `scp`, and `podman-remote`.
+- **Multi‑distro builds**: Alpine, Void, Debian, Fedora, and Nix supported via build args.
 - **Multi‑arch publishing**: GitHub Actions builds and publishes amd64 + arm64 manifests.
-- **Pinned upstream**: builds from `openai/codex` at `rust` plus a local patch.
+- **Upstream builds**: builds the latest matching upstream tags with local patches.
