@@ -1,4 +1,4 @@
-name: Build and Push Docker Image
+name: Build and push codex image
 
 on:
   push:
@@ -78,7 +78,7 @@ jobs:
       - name: Prepare image tags
         id: tags
         run: |
-          echo "image_name=ghcr.io/${GITHUB_REPOSITORY}" >> "$GITHUB_OUTPUT"
+          echo "image_name=ghcr.io/${GITHUB_REPOSITORY}/codex" >> "$GITHUB_OUTPUT"
 
       - name: Decision summary
         env:
@@ -138,9 +138,9 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ${{ runner.temp }}/.cache-oci
-          key: oci-cache-${{ matrix.arch }}-${{ hashFiles('base.dockerfile') }}-${{ needs.metadata.outputs.latest_tag }}
+          key: oci-cache-${{ matrix.arch }}-${{ hashFiles('./codex/base.dockerfile') }}-${{ needs.metadata.outputs.latest_tag }}
           restore-keys: |
-            oci-cache-${{ matrix.arch }}-${{ hashFiles('base.dockerfile') }}-
+            oci-cache-${{ matrix.arch }}-${{ hashFiles('./codex/base.dockerfile') }}-
 
       - name: Ensure cache dir exists
         run: |
@@ -166,11 +166,12 @@ jobs:
 
       - name: Build base image
         if: steps.check_oci.outputs.exists == 'false'
-        uses: redhat-actions/buildah-build@061ffd31bb5c3f8733a6f9bbdf00a9fb02eb708c
+        uses: redhat-actions/buildah-build@v3
         with:
           image: localhost/codex-base
           tags: ${{ matrix.arch }}
-          containerfiles: ./base.dockerfile
+          containerfiles: ./codex/base.dockerfile
+          context: ./codex
           build-args: |
             VERSION=${{ needs.metadata.outputs.latest_tag }}
 
@@ -236,11 +237,12 @@ jobs:
         run: podman load -i "${RUNNER_TEMP}/in/base-${VERSION}-${ARCH}.tar"
 
       - name: Build distro image
-        uses: redhat-actions/buildah-build@061ffd31bb5c3f8733a6f9bbdf00a9fb02eb708c
+        uses: redhat-actions/buildah-build@v3
         with:
           image: ${{ needs.metadata.outputs.image_name }}
           tags: ci-${{ matrix.distro.name }}-${{ matrix.arch }}
-          containerfiles: ./dockerfile
+          containerfiles: ./codex/dockerfile
+          context: ./codex
           build-args: |
             FINAL_IMAGE=${{ matrix.distro.image }}
             BASE_IMAGE=localhost/codex-base:${{ matrix.arch }}
@@ -292,7 +294,7 @@ jobs:
           done
 
       - name: Log in to GitHub Container Registry
-        uses: redhat-actions/podman-login@2e76993ec4585e058ea832c23ee3d885970936af
+        uses: redhat-actions/podman-login@v2
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -300,10 +302,10 @@ jobs:
 
       - name: Create & push multi-arch tags
         env:
-          IMAGE: ghcr.io/${{ github.repository }}
+          IMAGE: ghcr.io/${{ github.repository }}/codex
           DIST: ${{ matrix.dist }}
-          AMD: ghcr.io/${{ github.repository }}:ci-${{ matrix.dist }}-x86_64
-          ARM: ghcr.io/${{ github.repository }}:ci-${{ matrix.dist }}-aarch64
+          AMD: ghcr.io/${{ github.repository }}/codex:ci-${{ matrix.dist }}-x86_64
+          ARM: ghcr.io/${{ github.repository }}/codex:ci-${{ matrix.dist }}-aarch64
         run: |
           set -euxo pipefail
 
