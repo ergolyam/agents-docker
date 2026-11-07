@@ -62,10 +62,6 @@ RUN wget -O- https://github.com/podman-container-tools/podman/releases/download/
     tar -xOz "bin/podman-remote-static-linux_${TARGETARCH}" > /usr/local/bin/podman-remote && \
     chmod +x /usr/local/bin/podman-remote
 
-COPY rootfs /
-COPY install-skill.sh ./install-skill.sh
-RUN ./install-skill.sh
-
 ENV CODEX_HOME=/data
 ENV PATH="/usr/local/bin:${PATH}"
 
