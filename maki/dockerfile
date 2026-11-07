@@ -20,7 +20,7 @@ RUN patch -p1 -i maki-home.patch
 
 RUN cargo build --profile release-lto --locked && \
     mkdir -p /out && \
-    cp /cargo-cache/target/release/maki /out/maki
+    cp $CARGO_TARGET_DIR/release-lto/maki /out/maki
 
 
 FROM scratch AS main
