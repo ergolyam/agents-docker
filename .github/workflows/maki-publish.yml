@@ -1,0 +1,348 @@
+name: Build and push maki image
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'readme.md'
+      - '.github/workflows/codex-publish.yml'
+      - 'codex/**'
+  schedule:
+    - cron: '0 21 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  metadata:
+    name: Metadata
+    runs-on: ubuntu-latest
+    outputs:
+      latest_tag: ${{ steps.latest.outputs.latest_tag }}
+      prev_tag: ${{ steps.prev.outputs.prev_tag }}
+      should_build: ${{ steps.decide.outputs.should_build }}
+      image_name: ${{ steps.tags.outputs.image_name }}
+      cache_hit: ${{ steps.restore-tag-cache.outputs.cache-hit }}
+
+    steps:
+      - name: Fetch latest maki tag
+        id: latest
+        run: |
+          set -euo pipefail
+          latest="$(git ls-remote --tags https://github.com/tontinton/maki.git \
+            | awk -F/ '{print $NF}' \
+            | sed 's/\^{}//' \
+            | grep -E '^v[0-9]+(\.[0-9]+)*$' \
+            | sort -u -V \
+            | tail -n1)"
+          echo "latest_tag=$latest" >> "$GITHUB_OUTPUT"
+
+      - name: Restore cached tag
+        id: restore-tag-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ runner.temp }}/.cache
+          key: maki-tag-${{ steps.latest.outputs.latest_tag }}
+          restore-keys: |
+            maki-tag-
+
+      - name: Read previous tag
+        id: prev
+        run: |
+          set -euo pipefail
+          if [ -f "${RUNNER_TEMP}/.cache/maki_tag.txt" ]; then
+            prev="$(cat "${RUNNER_TEMP}/.cache/maki_tag.txt")"
+          else
+            prev=""
+          fi
+          echo "prev_tag=$prev" >> "$GITHUB_OUTPUT"
+
+      - name: Decide whether to build
+        id: decide
+        env:
+          LATEST_TAG: ${{ steps.latest.outputs.latest_tag }}
+          PREV_TAG: ${{ steps.prev.outputs.prev_tag }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" != "schedule" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          elif [ -z "${PREV_TAG}" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          elif [ "${LATEST_TAG}" != "${PREV_TAG}" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Prepare image tags
+        id: tags
+        run: |
+          echo "image_name=ghcr.io/${GITHUB_REPOSITORY}/maki" >> "$GITHUB_OUTPUT"
+
+      - name: Decision summary
+        env:
+          LATEST_TAG: ${{ steps.latest.outputs.latest_tag }}
+          PREV_TAG: ${{ steps.prev.outputs.prev_tag }}
+          SHOULD_BUILD: ${{ steps.decide.outputs.should_build }}
+        run: |
+          echo "Latest tag: ${LATEST_TAG}"
+          echo "Cached tag: ${PREV_TAG}"
+          echo "Should build: ${SHOULD_BUILD}"
+
+  build-base:
+    name: Build base image ${{ matrix.arch }}
+    needs: metadata
+    if: needs.metadata.outputs.should_build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [ x86_64, aarch64 ]
+    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+
+    steps:
+      - name: Set up zram
+        run: |
+          kernel="$(uname -r)"
+          if (( ${kernel%%.*} < 7 )); then
+            sudo apt-get update
+            sudo apt-get install -y "linux-modules-extra-${kernel}"
+          fi
+
+          while IFS= read -r dev; do
+            echo "Disabling /dev/${dev}"
+            sudo swapoff "/dev/${dev}" || echo "swapoff failed for ${dev}"
+            echo "Resetting /dev/${dev}"
+            sudo zramctl --reset "/dev/${dev}" || echo "reset failed for ${dev}"
+          done < <(zramctl --noheadings -o NAME 2>/dev/null || true)
+
+          sudo modprobe -r zram || echo "modprobe -r failed"
+          sudo modprobe zram
+
+          echo "Creating new zram device"
+          dev=$(sudo zramctl --find --algorithm zstd --size 32G)
+
+          echo "Created ${dev}"
+          sudo mkswap "${dev}"
+          sudo swapon --priority 100 "${dev}"
+
+          echo "Final state:"
+          swapon --show
+          zramctl
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Restore oci cache
+        id: restore-oci-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ runner.temp }}/.cache-oci
+          key: oci-cache-${{ matrix.arch }}-${{ hashFiles('./maki/dockerfile') }}-${{ needs.metadata.outputs.latest_tag }}
+          restore-keys: |
+            oci-cache-${{ matrix.arch }}-${{ hashFiles('./maki/dockerfile') }}-
+
+      - name: Ensure cache dir exists
+        run: |
+          mkdir -p "${RUNNER_TEMP}/.cache-oci"
+
+      - name: Delete old oci archives
+        env:
+          OCI_ARCHIVE: base-${{ needs.metadata.outputs.latest_tag }}-${{ matrix.arch }}.tar
+        run: |
+          echo "Keeping: ${OCI_ARCHIVE}"
+          find "${RUNNER_TEMP}/.cache-oci" -maxdepth 1 -type f -name 'base-*.tar' ! -name "${OCI_ARCHIVE}" -delete
+
+      - name: Check oci archive exists
+        id: check_oci
+        env:
+          OCI_ARCHIVE: base-${{ needs.metadata.outputs.latest_tag }}-${{ matrix.arch }}.tar
+        run: |
+          if [ -f "${RUNNER_TEMP}/.cache-oci/${OCI_ARCHIVE}" ]; then
+            echo "exists=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "exists=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Build base image
+        if: steps.check_oci.outputs.exists == 'false'
+        uses: redhat-actions/buildah-build@v3
+        with:
+          image: localhost/maki-base
+          tags: ${{ matrix.arch }}
+          containerfiles: ./maki/dockerfile
+          context: ./maki
+          build-args: |
+            VERSION=${{ needs.metadata.outputs.latest_tag }}
+
+      - name: Export OCI archive
+        if: steps.check_oci.outputs.exists == 'false'
+        env:
+          VERSION: ${{ needs.metadata.outputs.latest_tag }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          podman save --format oci-archive -o "${RUNNER_TEMP}/.cache-oci/base-${VERSION}-${ARCH}.tar" "localhost/maki-base:${ARCH}"
+
+      - name: Upload OCI archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: image-base-${{ matrix.arch }}
+          path: ${{ runner.temp }}/.cache-oci/base-${{ needs.metadata.outputs.latest_tag }}-${{ matrix.arch }}.tar
+          retention-days: 1
+          compression-level: 0
+
+      - name: Save oci cache
+        if: ${{ success() && steps.restore-oci-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ runner.temp }}/.cache-oci
+          key: ${{ steps.restore-oci-cache.outputs.cache-primary-key }}
+
+  build-distro:
+    name: Build ${{ matrix.distro.name }} ${{ matrix.arch }}
+    needs:
+      - metadata
+      - build-base
+    strategy:
+      fail-fast: false
+      matrix:
+        distro:
+          - name: alpine
+            image: docker.io/alpine:3.24
+          - name: void
+            image: ghcr.io/void-linux/void-glibc-busybox:latest
+          - name: debian
+            image: docker.io/debian:trixie-slim
+          - name: fedora
+            image: quay.io/fedora/fedora-minimal:latest
+          - name: nix
+            image: docker.io/nixos/nix:2.35.4
+        arch: [ x86_64, aarch64 ]
+    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Download base OCI archive
+        uses: actions/download-artifact@v8
+        with:
+          name: image-base-${{ matrix.arch }}
+          path: ${{ runner.temp }}/in
+
+      - name: Load base image into local storage
+        env:
+          VERSION: ${{ needs.metadata.outputs.latest_tag }}
+          ARCH: ${{ matrix.arch }}
+        run: podman load -i "${RUNNER_TEMP}/in/base-${VERSION}-${ARCH}.tar"
+
+      - name: Build distro image
+        uses: redhat-actions/buildah-build@v3
+        with:
+          image: ${{ needs.metadata.outputs.image_name }}
+          tags: ci-${{ matrix.distro.name }}-${{ matrix.arch }}
+          containerfiles: ./distro/dockerfile
+          context: ./distro
+          build-args: |
+            FINAL_IMAGE=${{ matrix.distro.image }}
+            BASE_IMAGE=localhost/maki-base:${{ matrix.arch }}
+            DISTRO=${{ matrix.distro.name }}
+
+      - name: Save OCI archive
+        env:
+          IMAGE: ${{ needs.metadata.outputs.image_name }}
+          DIST: ${{ matrix.distro.name }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/out"
+          podman save --format oci-archive -o "${RUNNER_TEMP}/out/${DIST}-${ARCH}.tar" "${IMAGE}:ci-${DIST}-${ARCH}"
+
+      - name: Upload OCI archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: image-${{ matrix.distro.name }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/out/${{ matrix.distro.name }}-${{ matrix.arch }}.tar
+          retention-days: 1
+          compression-level: 0
+
+  publish-distro:
+    name: Publish ${{ matrix.dist }} manifest
+    needs:
+      - metadata
+      - build-distro
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dist: [ alpine, void, debian, fedora, nix ]
+
+    steps:
+      - name: Download OCI archives
+        uses: actions/download-artifact@v8
+        with:
+          pattern: image-${{ matrix.dist }}-*
+          path: ${{ runner.temp }}/in
+          merge-multiple: true
+
+      - name: Load images into local storage
+        env:
+          DIST: ${{ matrix.dist }}
+        run: |
+          set -euo pipefail
+          for arch in x86_64 aarch64; do
+            podman load -i "${RUNNER_TEMP}/in/${DIST}-${arch}.tar"
+          done
+
+      - name: Log in to GitHub Container Registry
+        uses: redhat-actions/podman-login@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create & push multi-arch tags
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}/maki
+          DIST: ${{ matrix.dist }}
+          AMD: ghcr.io/${{ github.repository }}/maki:ci-${{ matrix.dist }}-x86_64
+          ARM: ghcr.io/${{ github.repository }}/maki:ci-${{ matrix.dist }}-aarch64
+        run: |
+          set -euxo pipefail
+
+          tags="${DIST}"
+          if [[ "${DIST}" == "alpine" ]]; then
+            tags="latest ${DIST}"
+          fi
+
+          for tag in ${tags}; do
+            podman manifest rm "${IMAGE}:${tag}" 2>/dev/null || true
+            podman manifest create "${IMAGE}:${tag}"
+            podman manifest add "${IMAGE}:${tag}" "containers-storage:${AMD}"
+            podman manifest add "${IMAGE}:${tag}" "containers-storage:${ARM}"
+            podman manifest push --all "${IMAGE}:${tag}" "docker://${IMAGE}:${tag}"
+          done
+
+  save-cache:
+    name: Save latest maki tag cache
+    needs:
+      - metadata
+      - publish-distro
+    runs-on: ubuntu-latest
+    if: ${{ needs.publish-distro.result == 'success' && needs.metadata.outputs.cache_hit != 'true' }}
+
+    steps:
+      - name: Save latest tag cache
+        env:
+          LATEST_TAG: ${{ needs.metadata.outputs.latest_tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/.cache"
+          echo "${LATEST_TAG}" > "${RUNNER_TEMP}/.cache/maki_tag.txt"
+
+      - name: Persist tag cache
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ runner.temp }}/.cache
+          key: maki-tag-${{ needs.metadata.outputs.latest_tag }}
