@@ -7,7 +7,8 @@ ENV CARGO_TARGET_DIR=/cargo-cache/target
 
 RUN apk add --no-cache \
     build-base \
-    pkgconf
+    pkgconf \
+    patch
 
 WORKDIR /build
 
@@ -15,7 +16,7 @@ RUN wget -qO - https://github.com/tontinton/maki/archive/refs/tags/${VERSION}.ta
     tar xz -f - --strip-components=1
 
 COPY maki-home.patch ./maki-home.patch
-RUN git apply maki-home.patch
+RUN patch -p1 -i maki-home.patch
 
 RUN cargo build --release --locked --profile release-lto \
     mkdir -p /out && \
