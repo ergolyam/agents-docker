@@ -39,3 +39,5 @@ RUN cargo build --manifest-path=codex-rs/Cargo.toml \
 FROM scratch AS main
 
 COPY --from=builder /out /out
+
+COPY ./entrypoint.sh /out/entrypoint.sh

@@ -62,9 +62,8 @@ RUN wget -O- https://github.com/podman-container-tools/podman/releases/download/
     tar -xOz "bin/podman-remote-static-linux_${TARGETARCH}" > /usr/local/bin/podman-remote && \
     chmod +x /usr/local/bin/podman-remote
 
-ENV CODEX_HOME=/data
 ENV PATH="/usr/local/bin:${PATH}"
 
 WORKDIR /work
 
-ENTRYPOINT [ "/usr/local/bin/codex", "--no-daemon" ]
+ENTRYPOINT [ "/usr/local/bin/entrypoint.sh" ]
