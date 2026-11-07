@@ -6,6 +6,8 @@ on:
       - main
     paths-ignore:
       - 'readme.md'
+      - '.github/workflows/maki-publish.yml'
+      - 'maki/**'
   schedule:
     - cron: '0 21 * * *'
   workflow_dispatch:
