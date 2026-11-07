@@ -1,0 +1,36 @@
+diff --git a/maki-storage/src/paths.rs b/maki-storage/src/paths.rs
+index 46ff2e60..2dd139da 100644
+--- a/maki-storage/src/paths.rs
++++ b/maki-storage/src/paths.rs
+@@ -9,6 +9,7 @@ use crate::id::MakiId;
+ 
+ const FALLBACK_DIR: &str = ".maki";
+ const APP_NAME: &str = "maki";
++const MAKI_HOME_ENV: &str = "MAKI_HOME";
+ const PROJECTS_DIR: &str = "projects";
+ const TASK_LOGS_DIR: &str = "tasks";
+ pub(crate) const GIT_MARKER: &str = ".git";
+@@ -221,9 +222,23 @@ fn state_logs(s: &impl BaseStrategy, fallback: &Path) -> (PathBuf, PathBuf) {
+     (state, logs)
+ }
+ 
++fn paths_from_home(home: &Path) -> Paths {
++    let home = normalize_path(home);
++    Paths {
++        config: home.join("config"),
++        data: home.join("data"),
++        state: home.join("state"),
++        logs: home.join("logs"),
++        cache: home.join("cache"),
++    }
++}
++
+ fn resolve() -> Option<&'static Paths> {
+     STRATEGY
+         .get_or_init(|| {
++            if let Some(home) = std::env::var_os(MAKI_HOME_ENV).filter(|value| !value.is_empty()) {
++                return Some(paths_from_home(Path::new(&home)));
++            }
+             let s = etcetera::choose_base_strategy().ok()?;
+             let data = s.data_dir().join(APP_NAME);
+             let (state, logs) = state_logs(&s, &data);

@@ -1,0 +1,29 @@
+FROM docker.io/rust:1.99.1-alpine3.24 AS builder
+
+ARG VERSION
+
+ENV CARGO_HOME=/cargo-cache/cargo
+ENV CARGO_TARGET_DIR=/cargo-cache/target
+
+RUN apk add --no-cache \
+    build-base \
+    pkgconf
+
+WORKDIR /build
+
+RUN wget -qO - https://github.com/tontinton/maki/archive/refs/tags/${VERSION}.tar.gz | \
+    tar xz -f - --strip-components=1
+
+COPY maki-home.patch ./maki-home.patch
+RUN git apply maki-home.patch
+
+RUN cargo build --release --locked --profile release-lto \
+    mkdir -p /out && \
+    cp /cargo-cache/target/release/maki /out/maki
+
+
+FROM scratch AS main
+
+COPY --from=builder /out /out
+
+COPY ./entrypoint.sh /out/entrypoint.sh
