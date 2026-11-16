@@ -104,33 +104,9 @@ jobs:
 
     steps:
       - name: Set up zram
-        run: |
-          kernel="$(uname -r)"
-          if (( ${kernel%%.*} < 7 )); then
-            sudo apt-get update
-            sudo apt-get install -y "linux-modules-extra-${kernel}"
-          fi
-
-          while IFS= read -r dev; do
-            echo "Disabling /dev/${dev}"
-            sudo swapoff "/dev/${dev}" || echo "swapoff failed for ${dev}"
-            echo "Resetting /dev/${dev}"
-            sudo zramctl --reset "/dev/${dev}" || echo "reset failed for ${dev}"
-          done < <(zramctl --noheadings -o NAME 2>/dev/null || true)
-
-          sudo modprobe -r zram || echo "modprobe -r failed"
-          sudo modprobe zram
-
-          echo "Creating new zram device"
-          dev=$(sudo zramctl --find --algorithm zstd --size 32G)
-
-          echo "Created ${dev}"
-          sudo mkswap "${dev}"
-          sudo swapon --priority 100 "${dev}"
-
-          echo "Final state:"
-          swapon --show
-          zramctl
+        uses: ergolyam/setup-zram@v1
+        with:
+          size: 32G
 
       - name: Checkout code
         uses: actions/checkout@v6
